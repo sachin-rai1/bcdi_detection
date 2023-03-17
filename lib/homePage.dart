@@ -340,7 +340,7 @@ class _HomePageState extends State<HomePage> {
                 const SizedBox(
                   height: 10,
                 ),
-                (isLoading.value == true)?Container():Image.memory(base64Decode(data["image"])),
+                (data == null)?Container(): (isLoading.value == true)?Container():Image.memory(base64Decode(data["image"])),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
