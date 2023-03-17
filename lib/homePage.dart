@@ -1,14 +1,17 @@
 import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:async/async.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:image/image.dart' as img;
 
 class HomePage extends StatefulWidget {
   const HomePage({Key? key}) : super(key: key);
@@ -23,7 +26,7 @@ class _HomePageState extends State<HomePage> {
   TextEditingController? titleTextController;
 
   var data;
-  var Cleanconfidence;
+  var cleanConfidence;
   var cleanClassValue;
   var isLoading = false.obs;
   var id = 0.obs;
@@ -33,29 +36,51 @@ class _HomePageState extends State<HomePage> {
   TextEditingController runNo = TextEditingController();
 
   upload(File imageFile) async {
-    isLoading.value = true;
-    var stream = http.ByteStream(DelegatingStream.typed(imageFile.openRead()));
-    var length = await imageFile.length();
-    var uploadURL = "http://ec2-54-162-165-26.compute-1.amazonaws.com/predict";
-    var uri = Uri.parse(uploadURL);
-    var request = http.MultipartRequest("POST", uri);
-    var multipartFile =
-        http.MultipartFile('file', stream, length, filename: (imageFile.path));
-    request.files.add(multipartFile);
-    var response = await request.send();
-    responseStatus = response.statusCode;
+    try {
+      isLoading.value = true;
+      // Resize image to 1024x1024 pixels
+      final bytes = await imageFile.readAsBytes();
+      final resizedImage = img.decodeImage(bytes);
+      final resized = img.copyResize(resizedImage!, width: 512, height: 512);
+      final tempDir = await getTemporaryDirectory();
+      final resizedFile = File('${tempDir.path}/resized.jpeg')
+        ..writeAsBytesSync(img.encodeJpg(resized));
 
-    if (response.statusCode == 200) {
-      response.stream
-          .transform(utf8.decoder)
-          .transform(json.decoder)
-          .listen((value) {
-        print("Value is :  $value");
-        data = value;
-        setState(() {});
+      var stream =
+          http.ByteStream(DelegatingStream.typed(resizedFile.openRead()));
+      var length = await resizedFile.length();
+      // var uploadURL = "http://ec2-54-162-165-26.compute-1.amazonaws.com/predict";
+      var uploadURL =
+          "http://ec2-54-227-80-131.compute-1.amazonaws.com/predict";
+      var uri = Uri.parse(uploadURL);
+      var request = http.MultipartRequest("POST", uri);
+      var multipartFile = http.MultipartFile('file', stream, length,
+          filename: (imageFile.path));
+      request.files.add(multipartFile);
+      var response = await request.send();
+      responseStatus = response.statusCode;
+
+      if (response.statusCode == 200) {
+        response.stream
+            .transform(utf8.decoder)
+            .transform(json.decoder)
+            .listen((value) {
+          print("Value is :  $value");
+          data = value;
+          print("data[0][image]");
+          print(data["image"]);
+          setState(() {});
+        });
+      } else {
+        setState(() {
+          isLoading.value = false;
+        });
+      }
+    } finally {
+      setState(() {
+        isLoading.value = false;
       });
     }
-    isLoading.value = false;
   }
 
   savePdf() async {
@@ -66,16 +91,14 @@ class _HomePageState extends State<HomePage> {
         snackPosition: SnackPosition.TOP,
         duration: Duration(milliseconds: 1500),
       ));
-    }
-    else if(runNo.text == ""){
+    } else if (runNo.text == "") {
       Get.showSnackbar(GetSnackBar(
         message: "Run Number Empty",
         title: "Enter Run No.",
         snackPosition: SnackPosition.TOP,
         duration: Duration(milliseconds: 1500),
       ));
-    }
-    else {
+    } else {
       var h = MediaQuery.of(context).size.height;
       final pdf = pw.Document();
 
@@ -84,8 +107,9 @@ class _HomePageState extends State<HomePage> {
           build: (pw.Context context) => pw.Center(
             child: pw.Column(
               children: [
-                pw.Text("Run No : ${runNo.text}" , style: pw.TextStyle(
-                    fontSize: 20, fontWeight: pw.FontWeight.bold)),
+                pw.Text("Run No : ${runNo.text}",
+                    style: pw.TextStyle(
+                        fontSize: 20, fontWeight: pw.FontWeight.bold)),
                 pw.Image(
                   pw.MemoryImage(_image!.readAsBytesSync()),
                   height: h / 1.5,
@@ -296,7 +320,6 @@ class _HomePageState extends State<HomePage> {
                                   classStatus = "BREAKAGE";
                                   break;
                               }
-
                               return Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
@@ -308,6 +331,7 @@ class _HomePageState extends State<HomePage> {
                                             fontSize: 20,
                                             fontWeight: FontWeight.bold),
                                       )),
+
                                 ],
                               );
                             })
@@ -316,6 +340,7 @@ class _HomePageState extends State<HomePage> {
                 const SizedBox(
                   height: 10,
                 ),
+                (isLoading.value == true)?Container():Image.memory(base64Decode(data["image"])),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
