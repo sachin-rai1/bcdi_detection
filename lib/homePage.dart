@@ -48,10 +48,7 @@ class _HomePageState extends State<HomePage> {
 
       var stream =
           http.ByteStream(DelegatingStream.typed(resizedFile.openRead()));
-      var length = await resizedFile.length();
-      // var uploadURL = "http://ec2-54-162-165-26.compute-1.amazonaws.com/predict";
-      var uploadURL =
-          "http://ec2-54-227-80-131.compute-1.amazonaws.com/predict";
+      var length = await resizedFile.length();      
       var uri = Uri.parse(uploadURL);
       var request = http.MultipartRequest("POST", uri);
       var multipartFile = http.MultipartFile('file', stream, length,
