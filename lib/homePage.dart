@@ -1,11 +1,10 @@
 import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:get/get.dart';
+import 'package:image_cropper/image_cropper.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -22,6 +21,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   File? _image;
+  CroppedFile? croppedFile;
   TextEditingController? idTextController;
   TextEditingController? titleTextController;
 
@@ -32,45 +32,99 @@ class _HomePageState extends State<HomePage> {
   var id = 0.obs;
   var classStatus;
   var responseStatus;
-
+  File? resizedFile;
   TextEditingController runNo = TextEditingController();
+
+  Future<void> hasNetwork() async {
+    try {
+      final result = await InternetAddress.lookup('google.com');
+      if (result.isNotEmpty && result[0].rawAddress.isNotEmpty) {
+        _cropImage();
+      }
+    } on SocketException catch (e) {
+      print(e);
+      setState(() {
+        data = null;
+      });
+      Get.showSnackbar(GetSnackBar(
+        backgroundColor: Colors.red,
+        message: "Please try after some time",
+        title: "No Internet Connection",
+        snackPosition: SnackPosition.TOP,
+        duration: Duration(milliseconds: 2000),
+      ));
+    }
+  }
+Future<void> _cropImage() async {
+    croppedFile = await ImageCropper().cropImage(
+    sourcePath: _image!.path,
+    aspectRatioPresets: [
+      CropAspectRatioPreset.square,
+      CropAspectRatioPreset.ratio3x2,
+      CropAspectRatioPreset.original,
+      CropAspectRatioPreset.ratio4x3,
+      CropAspectRatioPreset.ratio16x9
+    ],
+    uiSettings: [
+      AndroidUiSettings(
+          toolbarTitle: 'Cropper',
+          toolbarColor: Colors.deepOrange,
+          toolbarWidgetColor: Colors.white,
+          initAspectRatio: CropAspectRatioPreset.original,
+          lockAspectRatio: false),
+      IOSUiSettings(
+        title: 'Cropper',
+      ),
+      WebUiSettings(
+        context: context,
+      ),
+    ],
+  );
+    final bytes = await croppedFile?.readAsBytes();
+    final resizedImage = img.decodeImage(bytes!);
+    final resized = img.copyResize(resizedImage!, width: 512, height: 512);
+    final tempDir = await getTemporaryDirectory();
+
+    setState(() {
+      resizedFile = File('${tempDir.path}/resized${DateTime.now().microsecondsSinceEpoch}.jpeg')..writeAsBytesSync(img.encodeJpg(resized));
+    });
+    upload(resizedFile!);
+
+}
 
   upload(File imageFile) async {
     try {
-      isLoading.value = true;
-      // Resize image to 1024x1024 pixels
-      final bytes = await imageFile.readAsBytes();
-      final resizedImage = img.decodeImage(bytes);
-      final resized = img.copyResize(resizedImage!, width: 512, height: 512);
-      final tempDir = await getTemporaryDirectory();
-      final resizedFile = File('${tempDir.path}/resized.jpeg')
-        ..writeAsBytesSync(img.encodeJpg(resized));
+      setState(() {
+        isLoading.value = true;
+        data = null;
+      });
 
-      var stream =
-          http.ByteStream(DelegatingStream.typed(resizedFile.openRead()));
-      var length = await resizedFile.length();
-      // var uploadURL = "http://ec2-54-162-165-26.compute-1.amazonaws.com/predict";
-      var uploadURL =
-          "http://ec2-54-227-80-131.compute-1.amazonaws.com/predict";
+
+      // ignore: deprecated_member_use
+      var stream = http.ByteStream(DelegatingStream.typed(resizedFile!.openRead()));
+      var length = await resizedFile?.length();
+      var uploadURL = "http://ec2-54-227-80-131.compute-1.amazonaws.com/predict";
       var uri = Uri.parse(uploadURL);
       var request = http.MultipartRequest("POST", uri);
-      var multipartFile = http.MultipartFile('file', stream, length,
+      var multipartFile = http.MultipartFile('file', stream, length!,
           filename: (imageFile.path));
       request.files.add(multipartFile);
       var response = await request.send();
       responseStatus = response.statusCode;
-
       if (response.statusCode == 200) {
-        response.stream
-            .transform(utf8.decoder)
-            .transform(json.decoder)
-            .listen((value) {
-          print("Value is :  $value");
+        response.stream.transform(utf8.decoder).transform(json.decoder).listen((value) {
+          // print("Value is :  $value");
           data = value;
-          print("data[0][image]");
-          print(data["image"]);
           setState(() {});
         });
+      } else if (responseStatus == 502) {
+        Get.showSnackbar(GetSnackBar(
+          backgroundColor: Colors.red,
+          message: "Please try after some time",
+          title: "No Internet Connection",
+          snackPosition: SnackPosition.TOP,
+          duration: Duration(milliseconds: 2000),
+        ));
       } else {
         setState(() {
           isLoading.value = false;
@@ -84,7 +138,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   savePdf() async {
-    if (_image == null) {
+    if (resizedFile == null) {
       Get.showSnackbar(GetSnackBar(
         message: "No Image Selected",
         title: "Select Image",
@@ -101,56 +155,72 @@ class _HomePageState extends State<HomePage> {
     } else {
       var h = MediaQuery.of(context).size.height;
       final pdf = pw.Document();
+      (data == null)
+          ? Get.showSnackbar(GetSnackBar(
+              message: "Please try again",
+              title: "No data Found.",
+              snackPosition: SnackPosition.TOP,
+              duration: Duration(milliseconds: 1500),
+            ))
+          : pdf.addPage(
+              pw.Page(
+                build: (pw.Context context) => pw.Center(
+                  child: pw.Column(
+                    children: [
+                      pw.Text("Run No : ${runNo.text}",
+                          style: pw.TextStyle(
+                              fontSize: 20, fontWeight: pw.FontWeight.bold)),
+                      pw.Image(
+                        pw.MemoryImage(resizedFile!.readAsBytesSync()),
+                        height: h /2,
+                      ),
+                      pw.ListView.builder(
+                        itemCount: data['Class'].length,
+                        itemBuilder: (context, index) {
+                          print(data['Class'].length);
+                          switch (data["Class"][index].toString()) {
+                            case "15":
+                              classStatus = "CLEAN";
+                              break;
+                            case "16":
+                              classStatus = "DOT ";
+                              break;
+                            case "17":
+                              classStatus = "INCLUSION ";
+                              break;
+                            case "18":
+                              classStatus = "BREAKAGE";
+                              break;
+                          }
+                          return pw.Column(
+                            crossAxisAlignment: pw.CrossAxisAlignment.start,
+                            children: [
+                              pw.Padding(
+                                  padding: pw.EdgeInsets.all(8.0),
+                                  child: pw.Text(
+                                    "$classStatus = >   ${data["Percentage"][index].toString()} % ",
+                                    style: pw.TextStyle(
+                                        fontSize: 20,
+                                        fontWeight: pw.FontWeight.bold),
+                                  )),
+                            ],
+                          );
+                        },
+                      )
+                    ],
+                  ),
+                ),
+              ),
+            );
 
-      pdf.addPage(
-        pw.Page(
+      pdf.addPage(pw.Page(
           build: (pw.Context context) => pw.Center(
-            child: pw.Column(
-              children: [
-                pw.Text("Run No : ${runNo.text}",
-                    style: pw.TextStyle(
-                        fontSize: 20, fontWeight: pw.FontWeight.bold)),
+                  child: pw.Column(children: [
                 pw.Image(
-                  pw.MemoryImage(_image!.readAsBytesSync()),
+                  pw.MemoryImage(base64Decode(data["image"])),
                   height: h / 1.5,
                 ),
-                pw.ListView.builder(
-                  itemCount: data['Class'].length,
-                  itemBuilder: (context, index) {
-                    print(data['Class'].length);
-                    switch (data["Class"][index].toString()) {
-                      case "15":
-                        classStatus = "CLEAN";
-                        break;
-                      case "16":
-                        classStatus = "DOT ";
-                        break;
-                      case "17":
-                        classStatus = "INCLUSION ";
-                        break;
-                      case "18":
-                        classStatus = "BREAKAGE";
-                        break;
-                    }
-                    return pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                        pw.Padding(
-                            padding: pw.EdgeInsets.all(8.0),
-                            child: pw.Text(
-                              "$classStatus = >   ${data["Percentage"][index].toString()} % ",
-                              style: pw.TextStyle(
-                                  fontSize: 20, fontWeight: pw.FontWeight.bold),
-                            )),
-                      ],
-                    );
-                  },
-                )
-              ],
-            ),
-          ),
-        ),
-      );
+              ]))));
       Directory? directory;
       if (Platform.isIOS) {
         directory = await getApplicationDocumentsDirectory();
@@ -164,6 +234,7 @@ class _HomePageState extends State<HomePage> {
           '${directory!.path}/bcdi_detection${DateTime.now().microsecondsSinceEpoch}.pdf');
       print(file);
       await file.writeAsBytes(bytes);
+
       Get.showSnackbar(GetSnackBar(
         message: "File Save Successfully on Downloads Folder",
         title: "Saved",
@@ -172,6 +243,33 @@ class _HomePageState extends State<HomePage> {
         duration: Duration(milliseconds: 1500),
       ));
     }
+  }
+
+  Future<void> _pickImageFromGallery() async {
+    final ImagePicker _picker = ImagePicker();
+    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
+
+    log('image path : ${image?.path} -- MimeType : ${image?.mimeType}');
+
+    setState(() {
+      _image = File(image!.path);
+    });
+    hasNetwork();
+
+    Get.back();
+  }
+
+  Future<void> _pickImageFromCamera() async {
+    final ImagePicker _picker = ImagePicker();
+    final XFile? image = await _picker.pickImage(source: ImageSource.camera);
+    log('image path : ${image?.path} -- MimeType : ${image?.mimeType}');
+
+    setState(() {
+      _image = File(image!.path);
+    });
+
+    hasNetwork();
+    Get.back();
   }
 
   @override
@@ -271,7 +369,7 @@ class _HomePageState extends State<HomePage> {
                 const SizedBox(
                   height: 10,
                 ),
-                (_image == null)
+                (resizedFile == null)
                     ? Container(
                         height: h / 3,
                         width: w,
@@ -279,7 +377,7 @@ class _HomePageState extends State<HomePage> {
                     : ClipRRect(
                         // borderRadius: BorderRadius.circular(h/2),
                         child: Image.file(
-                        _image!,
+                        resizedFile!,
                         width: w,
                         // height: h / 3,
                         fit: BoxFit.fill,
@@ -291,62 +389,74 @@ class _HomePageState extends State<HomePage> {
                   () => Padding(
                     padding: const EdgeInsets.all(8.0),
                     child: (isLoading.value == true)
-                        ? const Center(child: CircularProgressIndicator())
-                        : Text(
-                            "Status Code:- ${responseStatus ?? ""}",
-                            style: const TextStyle(
-                                fontSize: 20, fontWeight: FontWeight.bold),
-                          ),
+                        ? Container()
+                        : (responseStatus == 200)
+                            ? Container()
+                            : Text(
+                                "Status Code:- ${responseStatus ?? ""}",
+                                style: const TextStyle(
+                                    fontSize: 20, fontWeight: FontWeight.bold),
+                              ),
                   ),
                 ),
                 (isLoading.value == false)
                     ? (data != null)
-                        ? ListView.builder(
-                            physics: const NeverScrollableScrollPhysics(),
-                            shrinkWrap: true,
-                            itemCount: data['Class'].length,
-                            itemBuilder: (BuildContext context, index) {
-                              switch (data["Class"][index].toString()) {
-                                case "15":
-                                  classStatus = "CLEAN";
-                                  break;
-                                case "16":
-                                  classStatus = "DOT ";
-                                  break;
-                                case "17":
-                                  classStatus = "INCLUSION ";
-                                  break;
-                                case "18":
-                                  classStatus = "BREAKAGE";
-                                  break;
-                              }
-                              return Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Padding(
-                                      padding: const EdgeInsets.all(8.0),
-                                      child: Text(
-                                        "$classStatus = >   ${data["Percentage"][index].toString()} % ",
-                                        style: const TextStyle(
-                                            fontSize: 20,
-                                            fontWeight: FontWeight.bold),
-                                      )),
-
-                                ],
-                              );
-                            })
+                        ? (data["Percentage"].isEmpty && data["Class"].isEmpty)
+                            ? Text(
+                                "As i am ml model i can detect only diamond images",
+                                style: const TextStyle(
+                                    fontSize: 20, fontWeight: FontWeight.bold),
+                              )
+                            : ListView.builder(
+                                physics: const NeverScrollableScrollPhysics(),
+                                shrinkWrap: true,
+                                itemCount: data['Class'].length,
+                                itemBuilder: (BuildContext context, index) {
+                                  switch (data["Class"][index].toString()) {
+                                    case "15":
+                                      classStatus = "CLEAN";
+                                      break;
+                                    case "16":
+                                      classStatus = "DOT ";
+                                      break;
+                                    case "17":
+                                      classStatus = "INCLUSION ";
+                                      break;
+                                    case "18":
+                                      classStatus = "BREAKAGE";
+                                      break;
+                                  }
+                                  return Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Padding(
+                                          padding: const EdgeInsets.all(8.0),
+                                          child: Text(
+                                            "$classStatus = >   ${data["Percentage"][index].toString()} % ",
+                                            style: const TextStyle(
+                                                fontSize: 20,
+                                                fontWeight: FontWeight.bold),
+                                          )),
+                                    ],
+                                  );
+                                })
                         : Container()
                     : const Center(child: CircularProgressIndicator()),
                 const SizedBox(
                   height: 10,
                 ),
-                (data == null)?Container(): (isLoading.value == true)?Container():Image.memory(base64Decode(data["image"])),
+                (data == null)
+                    ? Container()
+                    : (isLoading.value == true)
+                        ? Container()
+                        : Image.memory(base64Decode(data["image"])),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     ElevatedButton(
                         onPressed: () async {
-                          _pickImagefromGallery();
+                          _pickImageFromGallery();
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.transparent,
@@ -400,31 +510,5 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
     );
-  }
-
-  Future<void> _pickImagefromGallery() async {
-    final ImagePicker _picker = ImagePicker();
-    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
-
-    log('image path : ${image?.path} -- MimeType : ${image?.mimeType}');
-
-    setState(() {
-      _image = File(image!.path);
-    });
-    upload(_image!);
-    Get.back();
-  }
-
-  Future<void> _pickImageFromCamera() async {
-    final ImagePicker _picker = ImagePicker();
-    final XFile? image = await _picker.pickImage(source: ImageSource.camera);
-    log('image path : ${image?.path} -- MimeType : ${image?.mimeType}');
-
-    setState(() {
-      _image = File(image!.path);
-    });
-
-    upload(_image!);
-    Get.back();
   }
 }
